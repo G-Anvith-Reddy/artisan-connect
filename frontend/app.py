@@ -35,7 +35,7 @@ except Exception:
 # -------------------------
 # Backend URL
 # -------------------------
-BACKEND = os.getenv("BACKEND_URL") or os.getenv("BACKEND") or "http://127.0.0.1:8000"
+BACKEND = os.getenv("BACKEND_URL")
 
 # -------------------------
 # Page config & styling (aesthetic themed)

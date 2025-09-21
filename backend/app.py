@@ -15,13 +15,15 @@ from .db import SessionLocal, engine, Base
 from .models import Artisan, Product
 from .utils import save_image_and_enhance, translate_and_enrich
 
+
 # ----- Settings -----
 # Public origin of this backend (set in Render → Environment)
 BACKEND_ORIGIN = os.getenv("BACKEND_ORIGIN", "").rstrip("/")
 # Folder where product images are stored inside the container
 # If utils.save_image_and_enhance saves under "media/", keep this the same.
 MEDIA_DIR = Path("media")  # change to Path("static") if you use a static folder
-
+MEDIA_DIR = Path(__file__).resolve().parent / "media"
+MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 # Gemini key (optional)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 if GEMINI_API_KEY:

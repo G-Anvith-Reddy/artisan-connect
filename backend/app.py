@@ -1,35 +1,41 @@
 # backend/app.py
 import os
-import io
-import uuid
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Load .env early
 load_dotenv()
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 from .db import SessionLocal, engine, Base
 from .models import Artisan, Product
 from .utils import save_image_and_enhance, translate_and_enrich
 
-# Debug GEMINI key presence
+# ----- Settings -----
+# Public origin of this backend (set in Render → Environment)
+BACKEND_ORIGIN = os.getenv("BACKEND_ORIGIN", "").rstrip("/")
+# Folder where product images are stored inside the container
+# If utils.save_image_and_enhance saves under "media/", keep this the same.
+MEDIA_DIR = Path("media")  # change to Path("static") if you use a static folder
+
+# Gemini key (optional)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 if GEMINI_API_KEY:
     print("✅ GEMINI_API_KEY loaded from environment.")
 else:
     print("⚠️ GEMINI_API_KEY not found. Gemini calls may be skipped.")
 
-# Create tables if DB empty
+# DB init
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Artisan Prototype API")
 app.state.gemini_key = GEMINI_API_KEY
 
+# CORS: relax for prototype
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -37,9 +43,47 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Ensure media directory exists and mount a public static route
+MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+# Expose media files under /static
+app.mount("/static", StaticFiles(directory=str(MEDIA_DIR)), name="static")
+
+# -------- Helpers --------
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+def absolute_image_url(filename: str) -> str:
+    """
+    Build an absolute HTTPS URL for an image file under /static.
+    Requires BACKEND_ORIGIN to be set to https://<backend>.onrender.com
+    """
+    base = BACKEND_ORIGIN or ""
+    # Fallback to relative if origin not set (local dev)
+    return f"{base}/static/{filename}" if base else f"/static/{filename}"
+
+def safe_fileresponse(path: Path) -> FileResponse:
+    """
+    Return FileResponse only if the file exists; otherwise raise 404.
+    This avoids a runtime 500 later when Starlette attempts to stream the file.
+    """
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Image file not found")
+    # Let Starlette infer media type; or set media_type="image/jpeg" if needed
+    return FileResponse(str(path))
+
+# -------- Routes --------
 @app.get("/")
 def read_root():
-    return {"message": "🚀 Artisan Prototype API is running", "gemini_loaded": bool(app.state.gemini_key)}
+    return {
+        "message": "🚀 Artisan Prototype API is running",
+        "gemini_loaded": bool(app.state.gemini_key),
+        "static_mounted": True,
+        "backend_origin": BACKEND_ORIGIN or None,
+    }
 
 @app.get("/check-gemini")
 def check_gemini():
@@ -60,21 +104,13 @@ def check_gemini():
             client_error = f"import_error: {e}"
     return {"key_present": key_present, "client_init_ok": client_ok, "client_error": client_error}
 
-# DB session helper
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
 @app.post("/register_artisan")
 def register_artisan(
     name: str = Form(...),
     location: str = Form(...),
     language: str = Form("English"),
     bio: str = Form(""),
-    contact_number: str = Form("")   # <-- accept contact_number from frontend
+    contact_number: str = Form("")
 ):
     translated, enriched_bio = translate_and_enrich(bio, from_lang=language, to_lang="English")
     db: Session = next(get_db())
@@ -85,7 +121,7 @@ def register_artisan(
         contact_number=contact_number,
         bio_original=bio,
         bio_translated=translated,
-        bio_enriched=enriched_bio
+        bio_enriched=enriched_bio,
     )
     db.add(artisan)
     db.commit()
@@ -98,16 +134,20 @@ def get_artisan(artisan_id: int):
     artisan = db.query(Artisan).get(artisan_id)
     if not artisan:
         raise HTTPException(status_code=404, detail="Artisan not found")
-    # build product list
+
     products = []
     for p in artisan.products:
+        # If image_path stores a filename (e.g., "abc.jpg"), build absolute URL
+        # If it stores a full relative path (e.g., "media/abc.jpg"), use Path.name
+        filename = Path(p.image_path).name
         products.append({
             "id": p.id,
             "name": p.name,
             "description": p.description,
             "price": p.price,
-            "image_url": f"/image/{p.id}"
+            "image_url": absolute_image_url(filename),
         })
+
     return {
         "id": artisan.id,
         "name": artisan.name,
@@ -117,15 +157,23 @@ def get_artisan(artisan_id: int):
         "bio_original": artisan.bio_original,
         "bio_translated": artisan.bio_translated,
         "bio_enriched": artisan.bio_enriched,
-        "products": products
+        "products": products,
     }
 
 @app.put("/artisan/{artisan_id}")
-def update_artisan(artisan_id: int, name: str = Form(None), location: str = Form(None), language: str = Form(None), bio: str = Form(None), contact_number: str = Form(None)):
+def update_artisan(
+    artisan_id: int,
+    name: str = Form(None),
+    location: str = Form(None),
+    language: str = Form(None),
+    bio: str = Form(None),
+    contact_number: str = Form(None),
+):
     db: Session = next(get_db())
     artisan = db.query(Artisan).get(artisan_id)
     if not artisan:
         raise HTTPException(status_code=404, detail="Artisan not found")
+
     if name is not None:
         artisan.name = name
     if location is not None:
@@ -133,13 +181,13 @@ def update_artisan(artisan_id: int, name: str = Form(None), location: str = Form
     if language is not None:
         artisan.language = language
     if bio is not None:
-        # translate/enrich again (optional) — keep original behavior
         translated, enriched = translate_and_enrich(bio, from_lang=artisan.language or "auto", to_lang="English")
         artisan.bio_original = bio
         artisan.bio_translated = translated
         artisan.bio_enriched = enriched
     if contact_number is not None:
         artisan.contact_number = contact_number
+
     db.add(artisan)
     db.commit()
     db.refresh(artisan)
@@ -151,26 +199,52 @@ async def upload_product(
     product_name: str = Form(...),
     description: str = Form(""),
     price: str = Form(""),
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
 ):
-    path = save_image_and_enhance(file)
+    # Save file into MEDIA_DIR and enhance as your util defines
+    saved_path = save_image_and_enhance(file)  # ensure this writes under MEDIA_DIR
+    # Optional: move into MEDIA_DIR if util saves elsewhere
+    saved_path = Path(saved_path)
+    if saved_path.parent != MEDIA_DIR:
+        MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+        target = MEDIA_DIR / saved_path.name
+        saved_path.replace(target)
+        saved_path = target
+
     db: Session = next(get_db())
-    # ensure artisan exists
     art = db.query(Artisan).get(artisan_id)
     if not art:
         raise HTTPException(status_code=404, detail="Artisan not found")
-    product = Product(artisan_id=artisan_id, name=product_name, description=description, price=price, image_path=str(path))
+
+    product = Product(
+        artisan_id=artisan_id,
+        name=product_name,
+        description=description,
+        price=price,
+        image_path=str(saved_path.name),  # store only filename for portability
+    )
     db.add(product)
     db.commit()
     db.refresh(product)
-    return {"id": product.id, "image": product.image_path}
+
+    return {
+        "id": product.id,
+        "image": absolute_image_url(saved_path.name),
+    }
 
 @app.put("/product/{product_id}")
-async def update_product(product_id: int, product_name: str = Form(None), description: str = Form(None), price: str = Form(None), file: UploadFile = File(None)):
+async def update_product(
+    product_id: int,
+    product_name: str = Form(None),
+    description: str = Form(None),
+    price: str = Form(None),
+    file: UploadFile = File(None),
+):
     db: Session = next(get_db())
     p = db.query(Product).get(product_id)
     if not p:
         raise HTTPException(status_code=404, detail="Product not found")
+
     if product_name is not None:
         p.name = product_name
     if description is not None:
@@ -178,9 +252,15 @@ async def update_product(product_id: int, product_name: str = Form(None), descri
     if price is not None:
         p.price = price
     if file is not None:
-        # replace image
-        path = save_image_and_enhance(file)
-        p.image_path = str(path)
+        new_path = save_image_and_enhance(file)
+        new_path = Path(new_path)
+        if new_path.parent != MEDIA_DIR:
+            MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+            target = MEDIA_DIR / new_path.name
+            new_path.replace(target)
+            new_path = target
+        p.image_path = str(new_path.name)
+
     db.add(p)
     db.commit()
     db.refresh(p)
@@ -210,7 +290,7 @@ def find_artisan(name: str = "", location: str = ""):
             "id": a.id,
             "name": a.name,
             "location": a.location,
-            "language": a.language
+            "language": a.language,
         })
     return results
 
@@ -222,25 +302,32 @@ def search(q: str = "", location: str = "", limit: int = 20):
         qs = qs.filter(Artisan.location.ilike(f"%{location}%"))
     results = []
     for p in qs.limit(limit).all():
+        filename = Path(p.image_path).name
         results.append({
             "product_id": p.id,
             "name": p.name,
             "price": p.price,
-            "image_url": f"/image/{p.id}",
+            "image_url": absolute_image_url(filename),
             "artisan": {
                 "id": p.artisan.id,
                 "name": p.artisan.name,
                 "location": p.artisan.location,
-                "contact_number": p.artisan.contact_number,   # <-- include contact in search results
-                "bio": p.artisan.bio_translated
-            }
+                "contact_number": p.artisan.contact_number,
+                "bio": p.artisan.bio_translated,
+            },
         })
     return results
 
 @app.get("/image/{product_id}")
 def get_image(product_id: int):
+    """
+    Legacy endpoint kept for compatibility.
+    Prefer using the absolute /static/<filename> URLs returned by APIs.
+    """
     db: Session = next(get_db())
     p = db.query(Product).get(product_id)
     if not p:
         raise HTTPException(status_code=404, detail="Product not found")
-    return FileResponse(p.image_path)
+
+    path = MEDIA_DIR / Path(p.image_path).name
+    return safe_fileresponse(path)

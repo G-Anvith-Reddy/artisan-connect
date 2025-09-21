@@ -1,4 +1,41 @@
 # backend/utils.py
+# utils.py
+import os
+import uuid
+from pathlib import Path
+from typing import Union
+from PIL import Image  # pip install pillow
+
+# MEDIA_DIR lives next to backend/app.py -> backend/media
+MEDIA_DIR = Path(__file__).resolve().parent / "media"
+MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+
+def save_image_and_enhance(upload_file) -> Path:
+    """
+    Save an uploaded image into MEDIA_DIR and return the full Path.
+    Caller should store only path.name (the filename) in the DB.
+    """
+    # 1) Make a safe unique filename
+    ext = Path(upload_file.filename or "").suffix.lower() or ".jpg"
+    fname = f"{uuid.uuid4().hex}{ext}"
+    out_path = MEDIA_DIR / fname
+
+    # 2) Write bytes to disk
+    data = upload_file.file.read()
+    with open(out_path, "wb") as f:
+        f.write(data)
+
+    # 3) Optional: simple enhancement using Pillow (resize/convert)
+    try:
+        im = Image.open(out_path)
+        im = im.convert("RGB")  # normalize format
+        im.save(out_path, quality=90)  # recompress lightly
+    except Exception:
+        # If Pillow can’t read it, keep the original bytes
+        pass
+
+    return out_path  # store out_path.name in DB
+
 import os
 import json
 import re

@@ -33,18 +33,28 @@ except Exception:
     genai_available = False
 
 # -------------------------
-# Backend URL
+# Backend URL + URL helper
 # -------------------------
-BACKEND = os.getenv("BACKEND_URL")
+BACKEND = os.getenv("BACKEND_URL") or os.getenv("BACKEND") or ""
+
+def to_abs(url: str) -> str:
+    """
+    If the API returned an absolute URL (starts with http), use it as-is.
+    If it returned a relative path like /static/..., prefix BACKEND once.
+    """
+    if not url:
+        return url
+    if url.startswith("http"):
+        return url
+    base = BACKEND.rstrip("/")
+    return f"{base}/{url.lstrip('/')}" if base else url
 
 # -------------------------
 # Page config & styling (aesthetic themed)
 # -------------------------
 st.set_page_config(page_title="Artisan Connect", layout="wide", page_icon="🧵")
 
-
-
-# ---------- Inject fonts + CSS using components.html (reliable) ----------
+# ---------- Inject fonts + CSS using components.html ----------
 css_and_fonts = """
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700;800&family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
 <style>
@@ -60,8 +70,6 @@ html, body, [class*="css"]  {
   color:var(--text);
   font-family: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
 }
-
-/* Landing */
 .landing-wrap { padding:48px 64px; border-radius:14px; margin-bottom:24px; }
 .landing-left { font-family: "Playfair Display", Georgia, serif; color:#0f0d0b; }
 .landing-left h1 { font-size:76px; margin:0; line-height:0.95; font-weight:700; letter-spacing:-1px; }
@@ -81,12 +89,10 @@ html, body, [class*="css"]  {
 .product-card { background: var(--card); border-radius:10px; padding:12px; box-shadow: 0 8px 20px rgba(10,10,10,0.04); }
 </style>
 """
-# Inject the CSS (height can be 0 or small)
 components.html(css_and_fonts, height=10)
 
-
 # -------------------------
-# Base questions & fallback translations
+# Base questions & translation fallbacks
 # -------------------------
 BASE_QUESTIONS = [
     "What is your craft or art form?",
@@ -115,15 +121,14 @@ STATIC_TRANSLATIONS = {
 }
 
 # -------------------------
-# Session init (including landing toggle)
+# Session init (landing toggle etc.)
 # -------------------------
 if "show_home" not in st.session_state:
     st.session_state["show_home"] = True
-
 if "role" not in st.session_state:
     st.session_state["role"] = None
 if "register_mode" not in st.session_state:
-    st.session_state["register_mode"] = "new"  # "new" or "existing"
+    st.session_state["register_mode"] = "new"
 if "lang" not in st.session_state:
     st.session_state["lang"] = None
 if "translated_questions" not in st.session_state:
@@ -144,7 +149,7 @@ if "show_prompt_log" not in st.session_state:
     st.session_state["show_prompt_log"] = False
 
 # -------------------------
-# Landing page (aesthetic classic theme)
+# Landing page
 # -------------------------
 def landing_page():
     st.markdown('<div class="landing-wrap">', unsafe_allow_html=True)
@@ -167,7 +172,7 @@ def landing_page():
     st.markdown("<br/>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns([1, 0.5, 1])
     with c2:
-        if st.button("Continue to Artisan Connect", key="continue_btn", help="Go to the platform"):
+        if st.button("Continue to Artisan Connect", key="continue_btn"):
             st.session_state["show_home"] = False
             try:
                 st.experimental_rerun()
@@ -176,43 +181,42 @@ def landing_page():
     st.markdown('</div>', unsafe_allow_html=True)
     st.stop()
 
-# If showing home, render the landing and stop; otherwise continue to existing platform
 if st.session_state["show_home"]:
     landing_page()
 
 # -------------------------
-# Helper functions: API wrappers (unchanged)
+# API wrappers
 # -------------------------
 def api_get(path: str, params: dict = None, timeout: int = 20) -> Optional[requests.Response]:
     try:
-        return requests.get(BACKEND + path, params=params, timeout=timeout)
+        return requests.get(BACKEND.rstrip("/") + path, params=params, timeout=timeout)
     except Exception as e:
         st.error(f"Error contacting backend: {e}")
         return None
 
 def api_post(path: str, data: dict = None, files: dict = None, timeout: int = 30) -> Optional[requests.Response]:
     try:
-        return requests.post(BACKEND + path, data=data, files=files, timeout=timeout)
+        return requests.post(BACKEND.rstrip("/") + path, data=data, files=files, timeout=timeout)
     except Exception as e:
         st.error(f"Error contacting backend: {e}")
         return None
 
 def api_put(path: str, data: dict = None, files: dict = None, timeout: int = 30) -> Optional[requests.Response]:
     try:
-        return requests.put(BACKEND + path, data=data, files=files, timeout=timeout)
+        return requests.put(BACKEND.rstrip("/") + path, data=data, files=files, timeout=timeout)
     except Exception as e:
         st.error(f"Error contacting backend: {e}")
         return None
 
 def api_delete(path: str, timeout: int = 20) -> Optional[requests.Response]:
     try:
-        return requests.delete(BACKEND + path, timeout=timeout)
+        return requests.delete(BACKEND.rstrip("/") + path, timeout=timeout)
     except Exception as e:
         st.error(f"Error contacting backend: {e}")
         return None
 
 # -------------------------
-# Helpers: GenAI & prompts (unchanged)
+# GenAI helpers
 # -------------------------
 def log_prompt(name: str, prompt_text: str):
     st.session_state["prompt_log"].append({"name": name, "prompt": prompt_text})
@@ -265,7 +269,7 @@ def generate_artisan_story(language: str, qa_pairs: List[Tuple[str, str]]) -> st
         return " ".join([a for _, a in qa_pairs if a])
 
 # -------------------------
-# Phone validation utility (unchanged)
+# Validation + rerun helpers
 # -------------------------
 def is_valid_phone(s: str) -> bool:
     if not s:
@@ -273,9 +277,6 @@ def is_valid_phone(s: str) -> bool:
     s2 = s.strip()
     return s2.isdigit() and len(s2) == 10
 
-# -------------------------
-# Small safe rerun helper (defensive) (unchanged)
-# -------------------------
 def safe_rerun():
     try:
         st.experimental_rerun()
@@ -288,7 +289,7 @@ def safe_rerun():
             pass
 
 # -------------------------
-# UI: Hero / Role selection (unchanged logic, slight visual improvements)
+# Header / role selection
 # -------------------------
 st.markdown(
     '<div class="hero"><h1 style="margin:0">🧵 Artisan Connect</h1>'
@@ -296,7 +297,6 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# back to home link (top-right)
 rows = st.columns([3, 1])
 with rows[1]:
     if st.button("Back to home", key="back_home_btn"):
@@ -327,27 +327,22 @@ if st.session_state["show_prompt_log"]:
         st.markdown(f"<div class='prompt-log'>{entry['prompt']}</div>", unsafe_allow_html=True)
 
 # -------------------------
-# ARTISAN flow (unchanged logic)
+# ARTISAN flow
 # -------------------------
 if st.session_state["role"] == "artisan":
     st.header("Artisan")
 
-    # choose new or existing
     mode = st.radio("Are you new or do you already have a profile?",
                     ("Register as new artisan", "I already have a profile"),
                     index=0, key="reg_mode")
     st.session_state["register_mode"] = "new" if mode == "Register as new artisan" else "existing"
 
-    # ---------------------
-    # Existing artisan - load profile via ID or search
-    # ---------------------
     if st.session_state["register_mode"] == "existing":
         st.subheader("Load your profile")
         col_a, col_b = st.columns([1, 2])
 
-        # load by id (optional)
         with col_a:
-            id_text = st.text_input("Artisan ID (if known, leave blank otherwise)", value=str(st.session_state.get("artisan_id") or ""), key="load_id_text")
+            id_text = st.text_input("Artisan ID (if known)", value=str(st.session_state.get("artisan_id") or ""), key="load_id_text")
             if st.button("Load by ID", key="load_by_id_btn"):
                 val = (id_text or "").strip()
                 if not val:
@@ -368,7 +363,6 @@ if st.session_state["role"] == "artisan":
                     except ValueError:
                         st.error("Invalid ID — numbers only.")
 
-        # search by name/location
         with col_b:
             q_name = st.text_input("Search by artisan name", key="search_art_name")
             q_loc = st.text_input("Search by location", key="search_art_loc")
@@ -394,20 +388,15 @@ if st.session_state["role"] == "artisan":
                                         st.session_state["artisan_profile"] = resp2.json()
                                         st.success("Profile selected.")
 
-    # ---------------------
-    # New registration flow (questionnaire -> story -> register)
-    # ---------------------
     if st.session_state["register_mode"] == "new":
         st.subheader("Register as a new artisan")
 
         name = st.text_input("Name", key="reg_name")
         location = st.text_input("Location (city / area)", key="reg_location")
-        # contact number required and validated (10 digits)
         contact_number = st.text_input("Contact Number (required, 10 digits)", value=str(st.session_state.get("contact_number") or ""), key="reg_contact", placeholder="10-digit mobile number")
         st.markdown("**Select your comfortable language**")
         lang = st.selectbox("Language", options=list(STATIC_TRANSLATIONS.keys()), index=0, key="reg_lang")
 
-        # Questions in chosen language
         if st.session_state.get("lang") != lang or not st.session_state.get("translated_questions"):
             st.session_state["lang"] = lang
             with st.spinner("Loading questions in your language..."):
@@ -420,7 +409,6 @@ if st.session_state["role"] == "artisan":
             txt = st.text_area(q, value=st.session_state["answers"][i] if i < len(st.session_state["answers"]) else "", key=f"qa_{i}", height=80)
             st.session_state["answers"][i] = txt
 
-        # Generate story
         if st.button("Generate Story"):
             qa_pairs = list(zip(BASE_QUESTIONS, st.session_state["answers"]))
             with st.spinner("Generating your story..."):
@@ -430,13 +418,11 @@ if st.session_state["role"] == "artisan":
                 else:
                     st.error("Generation failed — try again or edit answers.")
 
-        # Show generated story and Register action
         if st.session_state.get("generated_story"):
             st.subheader("Generated artisan story (review)")
             st.write(st.session_state["generated_story"])
 
             if st.button("Confirm & Register"):
-                # validate contact
                 if not contact_number:
                     st.error("Contact number is required.")
                 elif not is_valid_phone(contact_number):
@@ -454,16 +440,12 @@ if st.session_state["role"] == "artisan":
                         j = resp.json()
                         st.success("Registered successfully.")
                         st.session_state["artisan_id"] = j.get("id")
-                        # fetch profile to populate products & fields
                         prof = api_get(f"/artisan/{st.session_state['artisan_id']}")
                         if prof and prof.ok:
                             st.session_state["artisan_profile"] = prof.json()
                     else:
                         st.error(f"Registration failed: {resp.status_code if resp else ''} {resp.text if resp else ''}")
 
-    # ---------------------
-    # After registration or load: show upload & profile management
-    # ---------------------
     if st.session_state.get("artisan_id"):
         st.markdown("---")
         st.subheader("Upload Product")
@@ -485,25 +467,21 @@ if st.session_state["role"] == "artisan":
                 if r and r.ok:
                     st.success("Product uploaded.")
                     st.json(r.json())
-                    # refresh profile
                     prof = api_get(f"/artisan/{aid}")
                     if prof and prof.ok:
                         st.session_state["artisan_profile"] = prof.json()
                 else:
                     st.error("Upload failed.")
 
-        # Ensure profile is loaded
         if not st.session_state.get("artisan_profile"):
             prof = api_get(f"/artisan/{aid}")
             if prof and prof.ok:
                 st.session_state["artisan_profile"] = prof.json()
 
-        # Profile display & editing
         profile = st.session_state.get("artisan_profile")
         st.markdown("---")
         st.subheader("My Profile & Products")
         if profile:
-            # tolerant lookup for contact field names
             contact_display = profile.get("contact_number") or profile.get("contact") or profile.get("phone") or ""
             st.markdown(f"**Name:** {profile.get('name','')}")
             st.markdown(f"**Location:** {profile.get('location','')}")
@@ -521,16 +499,13 @@ if st.session_state["role"] == "artisan":
                 st.info("Edit fields and click Save")
                 e_name = st.text_input("Name", value=profile.get("name") or "", key="edit_name")
                 e_location = st.text_input("Location", value=profile.get("location") or "", key="edit_location")
-                # contact (required)
                 e_contact = st.text_input("Contact Number (required, 10 digits)", value=contact_display or "", key="edit_contact")
-                # language dropdown (keep same set)
                 languages = list(STATIC_TRANSLATIONS.keys())
                 cur_lang = profile.get("language") if profile.get("language") in languages else "English"
                 e_lang = st.selectbox("Language", options=languages, index=languages.index(cur_lang), key="edit_lang")
                 e_bio = st.text_area("Bio (raw/original)", value=profile.get("bio_original") or "", key="edit_bio_raw")
 
                 if st.button("Save profile"):
-                    # validate contact
                     if not e_contact or not is_valid_phone(e_contact):
                         st.error("Contact number must be a 10-digit numeric string.")
                     else:
@@ -551,7 +526,6 @@ if st.session_state["role"] == "artisan":
                         else:
                             st.error("Failed to update profile.")
 
-            # Products list with edit/delete
             st.markdown("### My Products")
             products = profile.get("products", []) or []
             if not products:
@@ -562,17 +536,15 @@ if st.session_state["role"] == "artisan":
                 cols = st.columns([1, 3])
                 with cols[0]:
                     try:
-                        st.image(BACKEND + p.get("image_url", ""), width=140)
+                        st.image(to_abs(p.get("image_url", "")), width=140)
                     except Exception:
                         st.text("Image unavailable")
                 with cols[1]:
-                    # edit/delete buttons
                     if st.button("Edit", key=f"edit_prod_{p['id']}"):
                         st.session_state[f"editing_prod_{p['id']}"] = True
                     if st.button("Delete", key=f"delete_prod_{p['id']}"):
                         st.session_state[f"confirm_delete_{p['id']}"] = True
 
-                    # confirm delete
                     if st.session_state.get(f"confirm_delete_{p['id']}"):
                         st.warning(f"Delete '{p.get('name')}'?")
                         c1, c2 = st.columns([1,1])
@@ -589,7 +561,6 @@ if st.session_state["role"] == "artisan":
                         if c2.button("Cancel", key=f"confirm_no_{p['id']}"):
                             st.session_state.pop(f"confirm_delete_{p['id']}", None)
 
-                    # product edit form
                     if st.session_state.get(f"editing_prod_{p['id']}"):
                         st.markdown("Edit product")
                         np_name = st.text_input("Name", value=p.get("name",""), key=f"np_name_{p['id']}")
@@ -610,12 +581,11 @@ if st.session_state["role"] == "artisan":
                                 st.session_state.pop(f"editing_prod_{p['id']}", None)
                             else:
                                 st.error("Update failed.")
-
         else:
             st.error("Failed to load profile.")
 
 # -------------------------
-# CUSTOMER flow (unchanged)
+# CUSTOMER flow
 # -------------------------
 elif st.session_state["role"] == "customer":
     st.header("Search Artisan Products")
@@ -632,7 +602,7 @@ elif st.session_state["role"] == "customer":
                     cols = st.columns([1, 2])
                     with cols[0]:
                         try:
-                            st.image(BACKEND + p.get("image_url", ""), width=200)
+                            st.image(to_abs(p.get("image_url", "")), width=200)
                         except Exception:
                             st.text("Image unavailable")
                     with cols[1]:
@@ -647,7 +617,7 @@ elif st.session_state["role"] == "customer":
             st.error("Search failed or backend not reachable.")
 
 # -------------------------
-# default landing text (unchanged)
+# Default landing text
 # -------------------------
 else:
     st.markdown("Choose a role to begin: `Artisan` or `Customer`.")

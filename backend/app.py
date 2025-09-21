@@ -1,4 +1,16 @@
 # backend/app.py
+from pathlib import Path
+from fastapi.staticfiles import StaticFiles
+import os
+
+BACKEND_ORIGIN = os.getenv("BACKEND_ORIGIN", "").rstrip("/")
+MEDIA_DIR = Path(__file__).resolve().parent / "media"
+MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/static", StaticFiles(directory=str(MEDIA_DIR)), name="static")
+
+def absolute_image_url(filename: str) -> str:
+    return f"{BACKEND_ORIGIN}/static/{filename}" if BACKEND_ORIGIN else f"/static/{filename}"
+
 import os
 from pathlib import Path
 from dotenv import load_dotenv

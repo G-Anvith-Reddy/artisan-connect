@@ -1,3 +1,4 @@
+# backend/app.py
 from pathlib import Path
 import os
 from dotenv import load_dotenv
@@ -19,8 +20,9 @@ app = FastAPI(title="Artisan Prototype API")
 # Settings
 BACKEND_ORIGIN = os.getenv("BACKEND_ORIGIN", "").rstrip("/")
 MEDIA_DIR = Path(__file__).resolve().parent / "media"
-MEDIA_DIR.mkdir(parents=True, exist_ok=True)
-app.mount("/static", StaticFiles(directory=str(MEDIA_DIR)), name="static")
+
+# Mount static without checking existence at startup
+app.mount("/static", StaticFiles(directory=str(MEDIA_DIR), check_dir=False), name="static")
 
 # Optional Gemini key
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -250,7 +252,7 @@ def delete_product(product_id: int):
     return {"status": "deleted", "id": product_id}
 
 @app.get("/find_artisan")
-def find_artisan(name: str = "", location: str = ""):
+def find_artisan(name: str = "", location: str = "", limit: int = 50):
     db: Session = next(get_db())
     qs = db.query(Artisan)
     if name:
@@ -258,7 +260,7 @@ def find_artisan(name: str = "", location: str = ""):
     if location:
         qs = qs.filter(Artisan.location.ilike(f"%{location}%"))
     results = []
-    for a in qs.limit(50).all():
+    for a in qs.limit(limit).all():
         results.append({
             "id": a.id,
             "name": a.name,

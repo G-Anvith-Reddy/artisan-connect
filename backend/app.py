@@ -12,31 +12,24 @@ from .db import SessionLocal, engine, Base
 from .models import Artisan, Product
 from .utils import save_image_and_enhance, translate_and_enrich
 
-# Load environment variables early
 load_dotenv()
 
-# Create app first (so we can mount static on it)
 app = FastAPI(title="Artisan Prototype API")
 
-# ----- Settings -----
-# Public origin of this backend (set in Render → Environment)
+# Settings
 BACKEND_ORIGIN = os.getenv("BACKEND_ORIGIN", "").rstrip("/")
-
-# Folder where product images live inside the container
 MEDIA_DIR = Path(__file__).resolve().parent / "media"
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
-
-# Expose media files under /static so the browser can fetch them
 app.mount("/static", StaticFiles(directory=str(MEDIA_DIR)), name="static")
 
 # Optional Gemini key
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 app.state.gemini_key = GEMINI_API_KEY
 
-# Initialize DB schema
+# DB init
 Base.metadata.create_all(bind=engine)
 
-# CORS for prototype
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -44,7 +37,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# -------- Helpers --------
+# Helpers
 def get_db():
     db = SessionLocal()
     try:
@@ -53,22 +46,14 @@ def get_db():
         db.close()
 
 def absolute_image_url(filename: str) -> str:
-    """
-    Build an absolute HTTPS URL for an image under /static.
-    Requires BACKEND_ORIGIN to be set to https://<backend>.onrender.com in production.
-    """
     return f"{BACKEND_ORIGIN}/static/{filename}" if BACKEND_ORIGIN else f"/static/{filename}"
 
 def safe_fileresponse(path: Path) -> FileResponse:
-    """
-    Return FileResponse only if the file exists; otherwise raise 404
-    to avoid internal errors when streaming a missing file.
-    """
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Image file not found")
     return FileResponse(str(path))
 
-# -------- Routes --------
+# Routes
 @app.get("/")
 def read_root():
     return {
@@ -130,7 +115,7 @@ def get_artisan(artisan_id: int):
 
     products = []
     for p in artisan.products:
-        filename = Path(p.image_path).name  # store only filename in DB
+        filename = Path(p.image_path).name
         products.append({
             "id": p.id,
             "name": p.name,
@@ -192,7 +177,6 @@ async def upload_product(
     price: str = Form(""),
     file: UploadFile = File(...),
 ):
-    # Save file into MEDIA_DIR (utils returns a Path); store only the filename
     saved_path = Path(save_image_and_enhance(file))
     if saved_path.parent != MEDIA_DIR:
         target = MEDIA_DIR / saved_path.name
@@ -200,7 +184,7 @@ async def upload_product(
             saved_path.replace(target)
             saved_path = target
         except Exception:
-            saved_path = target  # best effort
+            saved_path = target
 
     db: Session = next(get_db())
     art = db.query(Artisan).get(artisan_id)
@@ -212,16 +196,13 @@ async def upload_product(
         name=product_name,
         description=description,
         price=price,
-        image_path=str(saved_path.name),  # store only filename
+        image_path=str(saved_path.name),
     )
     db.add(product)
     db.commit()
     db.refresh(product)
 
-    return {
-        "id": product.id,
-        "image": absolute_image_url(saved_path.name),
-    }
+    return {"id": product.id, "image": absolute_image_url(saved_path.name)}
 
 @app.put("/product/{product_id}")
 async def update_product(
@@ -312,9 +293,6 @@ def search(q: str = "", location: str = "", limit: int = 20):
 
 @app.get("/image/{product_id}")
 def get_image(product_id: int):
-    """
-    Legacy endpoint for compatibility; prefer using the absolute image_url from APIs.
-    """
     db: Session = next(get_db())
     p = db.query(Product).get(product_id)
     if not p:

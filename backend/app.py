@@ -1,21 +1,6 @@
-# backend/app.py
 from pathlib import Path
-from fastapi.staticfiles import StaticFiles
 import os
-
-BACKEND_ORIGIN = os.getenv("BACKEND_ORIGIN", "").rstrip("/")
-MEDIA_DIR = Path(__file__).resolve().parent / "media"
-MEDIA_DIR.mkdir(parents=True, exist_ok=True)
-app.mount("/static", StaticFiles(directory=str(MEDIA_DIR)), name="static")
-
-def absolute_image_url(filename: str) -> str:
-    return f"{BACKEND_ORIGIN}/static/{filename}" if BACKEND_ORIGIN else f"/static/{filename}"
-
-import os
-from pathlib import Path
 from dotenv import load_dotenv
-
-load_dotenv()
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import FileResponse
@@ -27,40 +12,37 @@ from .db import SessionLocal, engine, Base
 from .models import Artisan, Product
 from .utils import save_image_and_enhance, translate_and_enrich
 
+# Load environment variables early
+load_dotenv()
+
+# Create app first (so we can mount static on it)
+app = FastAPI(title="Artisan Prototype API")
 
 # ----- Settings -----
 # Public origin of this backend (set in Render → Environment)
 BACKEND_ORIGIN = os.getenv("BACKEND_ORIGIN", "").rstrip("/")
-# Folder where product images are stored inside the container
-# If utils.save_image_and_enhance saves under "media/", keep this the same.
-MEDIA_DIR = Path("media")  # change to Path("static") if you use a static folder
+
+# Folder where product images live inside the container
 MEDIA_DIR = Path(__file__).resolve().parent / "media"
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
-# Gemini key (optional)
+
+# Expose media files under /static so the browser can fetch them
+app.mount("/static", StaticFiles(directory=str(MEDIA_DIR)), name="static")
+
+# Optional Gemini key
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-if GEMINI_API_KEY:
-    print("✅ GEMINI_API_KEY loaded from environment.")
-else:
-    print("⚠️ GEMINI_API_KEY not found. Gemini calls may be skipped.")
-
-# DB init
-Base.metadata.create_all(bind=engine)
-
-app = FastAPI(title="Artisan Prototype API")
 app.state.gemini_key = GEMINI_API_KEY
 
-# CORS: relax for prototype
+# Initialize DB schema
+Base.metadata.create_all(bind=engine)
+
+# CORS for prototype
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Ensure media directory exists and mount a public static route
-MEDIA_DIR.mkdir(parents=True, exist_ok=True)
-# Expose media files under /static
-app.mount("/static", StaticFiles(directory=str(MEDIA_DIR)), name="static")
 
 # -------- Helpers --------
 def get_db():
@@ -72,21 +54,18 @@ def get_db():
 
 def absolute_image_url(filename: str) -> str:
     """
-    Build an absolute HTTPS URL for an image file under /static.
-    Requires BACKEND_ORIGIN to be set to https://<backend>.onrender.com
+    Build an absolute HTTPS URL for an image under /static.
+    Requires BACKEND_ORIGIN to be set to https://<backend>.onrender.com in production.
     """
-    base = BACKEND_ORIGIN or ""
-    # Fallback to relative if origin not set (local dev)
-    return f"{base}/static/{filename}" if base else f"/static/{filename}"
+    return f"{BACKEND_ORIGIN}/static/{filename}" if BACKEND_ORIGIN else f"/static/{filename}"
 
 def safe_fileresponse(path: Path) -> FileResponse:
     """
-    Return FileResponse only if the file exists; otherwise raise 404.
-    This avoids a runtime 500 later when Starlette attempts to stream the file.
+    Return FileResponse only if the file exists; otherwise raise 404
+    to avoid internal errors when streaming a missing file.
     """
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Image file not found")
-    # Let Starlette infer media type; or set media_type="image/jpeg" if needed
     return FileResponse(str(path))
 
 # -------- Routes --------
@@ -151,9 +130,7 @@ def get_artisan(artisan_id: int):
 
     products = []
     for p in artisan.products:
-        # If image_path stores a filename (e.g., "abc.jpg"), build absolute URL
-        # If it stores a full relative path (e.g., "media/abc.jpg"), use Path.name
-        filename = Path(p.image_path).name
+        filename = Path(p.image_path).name  # store only filename in DB
         products.append({
             "id": p.id,
             "name": p.name,
@@ -215,15 +192,15 @@ async def upload_product(
     price: str = Form(""),
     file: UploadFile = File(...),
 ):
-    # Save file into MEDIA_DIR and enhance as your util defines
-    saved_path = save_image_and_enhance(file)  # ensure this writes under MEDIA_DIR
-    # Optional: move into MEDIA_DIR if util saves elsewhere
-    saved_path = Path(saved_path)
+    # Save file into MEDIA_DIR (utils returns a Path); store only the filename
+    saved_path = Path(save_image_and_enhance(file))
     if saved_path.parent != MEDIA_DIR:
-        MEDIA_DIR.mkdir(parents=True, exist_ok=True)
         target = MEDIA_DIR / saved_path.name
-        saved_path.replace(target)
-        saved_path = target
+        try:
+            saved_path.replace(target)
+            saved_path = target
+        except Exception:
+            saved_path = target  # best effort
 
     db: Session = next(get_db())
     art = db.query(Artisan).get(artisan_id)
@@ -235,7 +212,7 @@ async def upload_product(
         name=product_name,
         description=description,
         price=price,
-        image_path=str(saved_path.name),  # store only filename for portability
+        image_path=str(saved_path.name),  # store only filename
     )
     db.add(product)
     db.commit()
@@ -266,13 +243,14 @@ async def update_product(
     if price is not None:
         p.price = price
     if file is not None:
-        new_path = save_image_and_enhance(file)
-        new_path = Path(new_path)
+        new_path = Path(save_image_and_enhance(file))
         if new_path.parent != MEDIA_DIR:
-            MEDIA_DIR.mkdir(parents=True, exist_ok=True)
             target = MEDIA_DIR / new_path.name
-            new_path.replace(target)
-            new_path = target
+            try:
+                new_path.replace(target)
+                new_path = target
+            except Exception:
+                new_path = target
         p.image_path = str(new_path.name)
 
     db.add(p)
@@ -335,13 +313,11 @@ def search(q: str = "", location: str = "", limit: int = 20):
 @app.get("/image/{product_id}")
 def get_image(product_id: int):
     """
-    Legacy endpoint kept for compatibility.
-    Prefer using the absolute /static/<filename> URLs returned by APIs.
+    Legacy endpoint for compatibility; prefer using the absolute image_url from APIs.
     """
     db: Session = next(get_db())
     p = db.query(Product).get(product_id)
     if not p:
         raise HTTPException(status_code=404, detail="Product not found")
-
     path = MEDIA_DIR / Path(p.image_path).name
     return safe_fileresponse(path)

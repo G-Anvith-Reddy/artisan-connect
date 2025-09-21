@@ -8,17 +8,24 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-MEDIA_DIR = Path(__file__).resolve().parent / "media"  # do NOT mkdir at import time
+MEDIA_DIR = Path(__file__).resolve().parent / "media"  # no mkdir at import
 
 def save_image_and_enhance(upload_file) -> str:
     """
     Save UploadFile to MEDIA_DIR and do light enhancement.
     Returns the full path string; store only Path(...).name in the DB.
     """
+    # Ensure MEDIA_DIR is a directory; fix if it's a stray file
+    if MEDIA_DIR.exists() and not MEDIA_DIR.is_dir():
+        try:
+            MEDIA_DIR.unlink()
+        except Exception as e:
+            print("Could not remove non-directory 'media':", e)
+    MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+
     ext = (Path(getattr(upload_file, "filename", "")).suffix or ".jpg").lower()
     fname = f"{uuid.uuid4().hex}{ext}"
     out_path = MEDIA_DIR / fname
-    out_path.parent.mkdir(parents=True, exist_ok=True)
 
     data = upload_file.file.read()
     with open(out_path, "wb") as f:
@@ -37,7 +44,7 @@ def save_image_and_enhance(upload_file) -> str:
 
     return str(out_path)
 
-# Optional: GenAI translation/enrichment
+# Optional: GenAI enrichment
 genai_client = None
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GENAI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 if GEMINI_API_KEY:
